@@ -49,9 +49,11 @@ Linux高并发通讯框架阅读参考
     <br>
       **sim_server** : 这是一个服务器端代码，是文件夹，下载到本地linux主机后，进入文件夹中，直接运行./sim_server程序即可运行，如果不放心，可以先执行make，再运行./sim_server<br>
       <br>
-      **clinet** : 是一个测试客户端，功能简单，一运行即可看懂如何操作，其中也包含Makefile文件，可以先make再运行./client<br>
+      **clinet** : 是一个测试客户端，功能简单，一运行即可看懂如何操作，其中也包含Makefile文件，可以先make再运行./client,这里面直接封装了服务器端IP和端口号，测试时需要更换为自己的服务器实际的IP和端口号<br>
       <br>
       **SIM_SERVER.zip** : 这是一个window端的项目代码，主要不是为了运行，而是为了阅读和修改代码，而且这个代码运行不了，因为window上面不支持epoll技术，为了防止编写代码时报错看着烦心，我将epoll头文件打包了进去。因为我写代码主要是用Clion写的，所以这个项目尽可能用Clion打开较好。Clion本身没有编译器，所以需要安装一个C++编译器，这里推荐Cygwin,Cygwin安装及Clion配置略有麻烦，这里可以参考我以前写的攻略：[关于Clion使用mingw输入回显和Cygwin配置二三事](https://tieba.baidu.com/p/5542169501)<br>
+      <br>
+      我的运行和测试环境都是CentOS7,有条件的朋友可以在这个环境下测试<br>
     
 
    
