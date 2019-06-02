@@ -53,6 +53,7 @@ Linux高并发通讯框架阅读参考
       <br>
       **SIM_SERVER.zip** : 这是一个window端的项目代码，主要不是为了运行，而是为了阅读和修改代码，而且这个代码运行不了，因为window上面不支持epoll技术，为了防止编写代码时报错看着烦心，我将epoll头文件打包了进去。因为我写代码主要是用Clion写的，所以这个项目尽可能用Clion打开较好。Clion本身没有编译器，所以需要安装一个C++编译器，这里推荐Cygwin,Cygwin安装及Clion配置略有麻烦，这里可以参考我以前写的攻略：[关于Clion使用mingw输入回显和Cygwin配置二三事](https://tieba.baidu.com/p/5542169501)<br>
       <br>
+      **另**，sim_server包里面还包含一个Makefile文件和一个server.conf配置文件，有关整个程序的配置设置都在这个文件当中
       我的运行和测试环境都是CentOS7,有条件的朋友可以在这个环境下测试<br>
     
 
