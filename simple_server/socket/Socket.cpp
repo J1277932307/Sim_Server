@@ -12,7 +12,7 @@
 #include "../log/Logger.h"
 
 
-class Socket;
+
 /*--------------------下面connection_pool_struct成员函数--------------------------------------*/
 
 //连接池结构体的构造函数
@@ -38,6 +38,7 @@ void connection_pool_struct::get_connection_to_use()
     lastPing_time = time(nullptr);   //上次心跳包到来的时间
     flood_kick_last_time = 0;        //flood上次攻击包到达的时间
     flood_attack_count = 0;          //在给定时间内收到flood攻击包的次数
+    sendCountNum = 0;                //发送队列中有的条目数
 
 
 
@@ -96,6 +97,8 @@ Socket::Socket()
     msg_send_count = 0;                 //发送消息队列中的消息数量
     total_recycle_conn_num = 0;         //延迟回收连接队列的大小
     onlineUserCount = 0;                //有多少用户连接进来，刚开始为0
+    discardSendPKGCount = 0;            //丢弃的待发送消息数量
+    lastPrintTime = 0;                  //上次发印统计信息的时间
 }
 
 //Socket析构函数
@@ -126,9 +129,10 @@ bool Socket::initialize()
         heartPacket_wait_time = std::stoi(conf->get_config_by_name("MaxWaitTime"));     //读取配置文件中规定的心跳包发送时间
         heartPacket_wait_time = heartPacket_wait_time > 5 ? heartPacket_wait_time : 5;
 
-        //开启连接超时功能，如果用户连入主机时间过长，则服务器主动断开连接
-        timeout_kick = std::stoi(conf->get_config_by_name("Timeout_Kick"));
+
     }
+    //开启连接超时功能，如果用户连入主机时间过长，则服务器主动断开连接
+    timeout_kick = std::stoi(conf->get_config_by_name("Timeout_Kick"));
 
     flood_check_Enable = std::stoi(conf->get_config_by_name("Flood_Attack_Kick_Enable"));//读取配置文件中是否开启了洪泛攻击检测功能，1开启
     if(flood_check_Enable)  //如果开启洪泛攻击检测，则我们将读取关于此功能的余下配置项
@@ -346,7 +350,37 @@ void Socket::close_sockets()
 //将待发送消息放到发消息队列中
 void Socket::put_to_msg_Queue(char *sendbuf)
 {
+    Memory* p_memory = Memory::getInstance();
     std::lock_guard<std::mutex> lock(send_msg_mutex);
+
+    if(msg_send_count > 50000)  //如果消息队列中积压的待发送消息超过50000，即有可能有些恶意客户端只发不收，那我们就强制释放部分消息数据
+    {
+        p_memory->free_Memory(sendbuf);
+        return;
+    }
+
+    //总体上没有风险，不会导致服务器崩溃，要看看人体数据，找一下恶意者
+    MSG_HEADER* p_msg_header = (MSG_HEADER*)sendbuf;
+    connection_pool* p_Conn = p_msg_header->conn_pool;
+    if(p_Conn->send_count > 400)
+    {
+        //该用户收消息太慢【或者干脆不收消息】，累积的该用户的发送队列中有的数据条目数过大，认为是恶意用户，直接切断
+        char str_famt[128];
+        sprintf(str_famt,"发现某用户%d积压了大量待发送数据包，切断与他的连接！\n",p_Conn->fd);
+        Logger::write_to_screen(string(str_famt));
+
+        ++discardSendPKGCount;
+        p_memory->free_Memory(sendbuf);
+        forwardly_close_socket(p_Conn);
+        return;
+
+    }
+
+    ++p_Conn->sendCountNum;  //此连接发送队列中有的数据条目数+1
+
+
+
+
     msg_send_Queue.push_back(sendbuf);
     ++msg_send_count;        //将消息队列中的消息数+1，这里是原子操作
 
@@ -642,7 +676,7 @@ void *Socket::send_data_thread(void *thread_data)
                     ++begin;
                     continue;
                 }
-
+                --p_Conn->sendCountNum;  //发送队列中数据条目数-1
                 //走到这里，才是我们手动发送消息
                 p_Conn->sent_memory_pointer = p_msg_buf;    //发送后释放用的
                 pos_temp = begin;
@@ -654,7 +688,7 @@ void *Socket::send_data_thread(void *thread_data)
 
                 //测试使用,输出到屏幕上
                 char info_strfmt[128];
-                //sprintf(info_strfmt, "即将发送数据%d", p_Conn->send_size);
+                sprintf(info_strfmt, "即将发送数据%d", p_Conn->send_size);
                 Logger::write_to_screen(string(info_strfmt));
 
                 sent_size = p_socket_obj->send_data(p_Conn, p_Conn->send_buf,p_Conn->send_size);  //手动调用函数发送数据，并返回发送的的数据字节长度
@@ -670,7 +704,7 @@ void *Socket::send_data_thread(void *thread_data)
                         p_Conn->send_count = 0;       //epoll驱动标志位，如果我们没有一次性把数据发送完毕，有可能是发送缓存区满，则剩余数据需要使用epoll驱动发送，此标志位自增1，此处，其原本就应该是0
 
                         //测试用
-                       // Logger::write_to_screen("Socket::send_data_thread()数据发送完毕");
+                        Logger::write_to_screen("Socket::send_data_thread()数据发送完毕");
 
                     } else   //如果没有全部发送完毕，则剩余数据使用epoll驱动发送，把可写事件投递到epoll当中
                     {
@@ -748,9 +782,14 @@ void Socket::event_accept(connection_pool *listen_socket)   //传进来的是监
     {
         if(use_accept4)  //如果可以使用accept4()
         {
-            client_socket = accept4(listen_socket->fd,&client_addr,&cli_addr_len,SOCK_NONBLOCK);
+            client_socket = accept4(listen_socket->fd,&client_addr,&cli_addr_len,SOCK_NONBLOCK);//使用accept4接收连接，并同时设置此套接字非阻塞
         } else   //如果不能使用accept4()
         {
+            //惊群，有时候不一定完全惊动所有4个worker进程，可能只惊动其中2个等等，其中一个成功其余的accept4()都会返回-1；错误 (11: Resource temporarily unavailable【资源暂时不可用】)
+            //所以参考资料：https://blog.csdn.net/russell_tao/article/details/7204260
+            //其实，在linux2.6内核上，accept系统调用已经不存在惊群了（至少我在2.6.18内核版本上已经不存在）。大家可以写个简单的程序试下，在父进程中bind,listen，然后fork出子进程，
+            //所有的子进程都accept这个监听句柄。这样，当新连接过来时，大家会发现，仅有一个子进程返回新建的连接，其他子进程继续休眠在accept调用上，没有被唤醒。
+            //ngx_log_stderr(0,"测试惊群问题，看惊动几个worker进程%d\n",s); 【我的结论是：accept4可以认为基本解决惊群问题，但似乎并没有完全解决，有时候还会惊动其他的worker进程】
             client_socket = accept(listen_socket->fd,&client_addr,&cli_addr_len);
         }
         if(client_socket == -1)  //获取连接套接字出错
@@ -799,7 +838,7 @@ void Socket::event_accept(connection_pool *listen_socket)   //传进来的是监
 
         //走下来就表示accept()或accept4()成功了,我们将新连接的连接套接字绑定一块连接池对象
 
-        if(onlineUserCount >= worker_connection)  //连接数已达到当前并发连接
+        if(onlineUserCount >= worker_connection)  //连接数已达到当前并发连接最大限制
         {
             char str_famt[128];
             sprintf(str_famt,"超出系统允许的最大连入用户数(最大允许连入数%d)，关闭连入请求(%d)。",worker_connection,client_socket);
@@ -808,6 +847,20 @@ void Socket::event_accept(connection_pool *listen_socket)   //传进来的是监
             close(client_socket);
             return;
         }
+
+        //如果某些恶意用户连上来发了1条数据就断，不断连接，会导致频繁调用ngx_get_connection()使用我们短时间内产生大量连接，危及本服务器安全
+        if(connection_list.size() > (worker_connection * 5))
+        {
+            //比如你允许同时最大2048个连接，但连接池却有了 2048*5这么大的容量，这肯定是表示短时间内 产生大量连接/断开，因为我们的延迟回收机制，这里连接还在垃圾池里没有被回收
+            if(free_conntion_list.size() < worker_connection)
+            {
+                //整个连接池这么大了，而空闲连接却这么少了，所以我认为是短时间内产生大量连接，发一个包后就断开，我们不可能让这种情况持续发生，所以必须断开新入用户的连接
+                //一直到free_conntion_list变得足够大【连接池中连接被回收的足够多】
+                close(client_socket);
+                return ;
+            }
+        }
+
         new_conn = get_connection_from_pool(client_socket);
         if(new_conn == nullptr)  //连接池不够用，分配不出来新的对象，则关闭此socket并直接返回
         {
@@ -820,7 +873,7 @@ void Socket::event_accept(connection_pool *listen_socket)   //传进来的是监
 
         //走下来即成功获取连接池对象
         //拷贝客户端地址到连接对象
-        memcpy(&new_conn->socket_addr,&client_addr,sizeof(cli_addr_len));
+        memcpy(&new_conn->socket_addr,&client_addr,cli_addr_len);
 
         if(!use_accept4)
         {
@@ -1334,18 +1387,20 @@ MSG_HEADER* Socket::remove_first_Timer()
     return p_msgheader;
 }
 
+//根据给出的当前时间，找到整个队列中的超时连接，本函数不互斥，由调用函数负责互斥
 MSG_HEADER* Socket::get_overtime_timer(time_t cur_time)
 {
     Memory* memory = Memory::getInstance();
     MSG_HEADER* p_msgheader;
 
+    //队列为空
     if(time_Queue_size == 0 || time_Queue.empty())
     {
         return nullptr;
     }
 
     time_t earliest_time = get_Earliest_time();
-    if(earliest_time <= cur_time)
+    if(earliest_time <= cur_time)  //最早放入监听连接队列的时间，小于当前时间，即说明超时
     {
         p_msgheader = remove_first_Timer();
 
@@ -1354,6 +1409,7 @@ MSG_HEADER* Socket::get_overtime_timer(time_t cur_time)
             time_t  new_time = cur_time + heartPacket_wait_time;
             MSG_HEADER* tmp_msg_header = (MSG_HEADER*)memory->allocMemory(msg_header_len,false);
 
+            //因为下次超时还要判断，所以我们将其再添加回来
             tmp_msg_header->conn_pool = p_msgheader->conn_pool;
             tmp_msg_header->cur_sequence = p_msgheader->cur_sequence;
             time_Queue.insert(std::make_pair(new_time,tmp_msg_header));
@@ -1370,6 +1426,8 @@ MSG_HEADER* Socket::get_overtime_timer(time_t cur_time)
 
 }
 
+
+//将指定的连接从time_Queue中删除
 void Socket::delete_frome_Time_Queue(connection_pool *pConn)
 {
     Memory* memory = Memory::getInstance();
@@ -1381,9 +1439,9 @@ lblMTQM:
 
     for(;begin != end;++begin)
     {
-        if(begin->second->conn_pool == pConn)
+        if(begin->second->conn_pool == pConn)  //找到指定的连接
         {
-            memory->free_Memory(begin->second);
+            memory->free_Memory(begin->second); //释放内存
             time_Queue.erase(begin);
             --time_Queue_size;
             goto lblMTQM;
@@ -1410,13 +1468,14 @@ void Socket::clear_Time_Queue()
 }
 
 
-void* Socket::time_Queue_Monitor_thread(Socket::thread_item *thread_data)
+void* Socket::time_Queue_Monitor_thread(thread_item *thread_data)
 {
     Socket* p_socket_obj = thread_data->p_this;
 
+
     time_t absolute_time,cur_time;
 
-    while (g_stop_pro == 0)
+    while (g_stop_pro == 0) //不退出
     {
         //这里没互斥判断，所以只是个初级判断，目的至少是队列为空时避免系统损耗
         if(p_socket_obj->time_Queue_size > 0)   //队列不为空
@@ -1431,7 +1490,7 @@ void* Socket::time_Queue_Monitor_thread(Socket::thread_item *thread_data)
 
                 std::unique_lock<std::mutex> lock(p_socket_obj->time_queue_mutex);
 
-                while(result == p_socket_obj->get_overtime_timer(cur_time))   //获取所有到达规定时间的连接
+                while(result = p_socket_obj->get_overtime_timer(cur_time))   //获取所有到达规定时间的连接
                 {
                     list_msg.push_back(result);
                 }
@@ -1464,7 +1523,7 @@ void Socket::ping_timeout_checking(MSG_HEADER *p_msg_header, time_t cut_time)
 //主动关闭一个连接时，相应的操作
 void Socket::forwardly_close_socket(connection_pool *pConn)
 {
-    if(if_kick_time_enable == 1)
+    if(if_kick_time_enable)
     {
         delete_frome_Time_Queue(pConn);
     }
@@ -1482,7 +1541,7 @@ void Socket::forwardly_close_socket(connection_pool *pConn)
 bool Socket::flood_check(connection_pool *pConn)
 {
     auto cur_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); //获取当前时间的毫秒值
-    bool is_kick = false;
+    bool if_kick = false;
 
     if((cur_time - pConn->flood_kick_last_time) < flood_time_Interval)  //两次收包的时间小于100毫秒，则有flood倾向，统计次数
     {
@@ -1496,8 +1555,39 @@ bool Socket::flood_check(connection_pool *pConn)
 
     if(pConn->flood_attack_count >= flood_kick_Count)
     {
-        is_kick = true;       //到达统计次数，踢人标志位就绪
+        if_kick = true;       //到达统计次数，踢人标志位就绪
     }
-    return is_kick;
+    return if_kick;
 
+}
+
+void Socket::print_Server_Info()
+{
+    time_t  currtime = time(nullptr);
+    if((currtime - lastPrintTime) > 10)  //10秒打印一次
+    {
+        int recvMsgQueueSize = glo_thread_pool.get_msg_Count();  //获取收消息队列当前的消息数量
+        lastPrintTime = currtime;
+        int userCount = onlineUserCount;  //在线用户数，atomic做个中转，直接打印atomic类型报错；
+        int sendMsgQueueSize = msg_send_count; //发消息队列大小
+
+        char str_famt_userCount[128];
+        char str_famt_conn[128];
+        char str_famt_timerQueue[128];
+        char str_famt_msgQueue[128];
+
+        sprintf(str_famt_userCount,"当前在线人数/总人数(%d/%d)\n",userCount,worker_connection);
+        sprintf(str_famt_conn,"连接池中空闲连接/总连接/要释放的连接(%d/%d/%d)\n",free_conntion_list.size(),connection_list.size(),recycle_conn_list.size());
+        sprintf(str_famt_timerQueue,"当前时间队列大小(%d)\n",time_Queue_size);
+        sprintf(str_famt_msgQueue,"当前收消息队列/发消息队列大小分别为(%d/%d)，丢弃的待发送数据包数量为%d\n",recvMsgQueueSize,sendMsgQueueSize,discardSendPKGCount);
+
+        Logger::write_to_screen("------------------------------------begin--------------------------------------\n");
+        Logger::write_to_screen(string(str_famt_userCount));
+        Logger::write_to_screen(string(str_famt_conn));
+        Logger::write_to_screen(string(str_famt_timerQueue));
+        Logger::write_to_screen(string(str_famt_msgQueue));
+        Logger::write_to_screen("------------------------------------begin--------------------------------------\n");
+
+
+    }
 }

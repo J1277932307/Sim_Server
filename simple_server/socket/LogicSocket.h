@@ -29,6 +29,8 @@ public:
     virtual void ping_timeout_checking(MSG_HEADER* p_msg_header,time_t cut_time);
     void send_Ping_to_Client(MSG_HEADER* p_msg_header,unsigned short msgCode);
 
+
+
 };
 
 

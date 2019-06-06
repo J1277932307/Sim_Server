@@ -204,3 +204,7 @@ void Thread::put_msg_to_recvQueue(char* buf)
 
 
 }
+int Thread::get_msg_Count()
+{
+    return msg_count;
+}

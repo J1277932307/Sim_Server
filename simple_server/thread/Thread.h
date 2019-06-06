@@ -52,6 +52,7 @@ public:
     void stop_All();                                  //关闭并释放所有线程资源
     void call();                             //来消息了，使用些函数来调用线程处理任务
     void put_msg_to_recvQueue(char* buf);                     //把消息放入存储待处理消息队列当中
+    int get_msg_Count();
 
 
 

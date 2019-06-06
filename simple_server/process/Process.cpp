@@ -281,6 +281,7 @@ void Process::worker_process(int t_nums)
     {
 
         glo_socket.epoll_process(-1);
+        glo_socket.print_Server_Info();
 
     }
     //如果能从这个死循环出来,释放资源

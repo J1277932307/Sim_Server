@@ -6,7 +6,6 @@
 #include "util/utils.h"
 #include "signal/Signal.h"
 #include "process/Process.h"
-//#include "thread/Thread.h"
 #include "socket/LogicSocket.h"
 #include "crc/CRC32.h"
 #include "memory/Memory.h"

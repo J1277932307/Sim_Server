@@ -4,6 +4,7 @@
 
 #ifndef SIM_SERVER_SOCKET_H
 #define SIM_SERVER_SOCKET_H
+
 #include <netinet/in.h>
 #include <thread>
 #include <vector>
@@ -116,7 +117,7 @@ struct connection_pool_struct
     //和网络安全相关
      uint64_t flood_kick_last_time;  //记录上次flood攻击的时间
      int flood_attack_count;         //记录flood攻击在该时间内收到包的次数统计
-
+     std::atomic<int> sendCountNum;  //发送队列中有的数据条目数，若client只发不收，则可能造成此数过大，依据此数做出踢出处理
 
     connection_pool* next;          //指向下一个连接池内结构，彼此构成一个链表
 
@@ -145,12 +146,12 @@ private:
     struct thread_item                              //线程结构体，主要用来保存一些线程相关的参数，主要有两个线程用到，一个是发数据线程，一个是回收线程
     {
         std::shared_ptr<std::thread> p_thread;      //线程句柄
-        Socket *p_this;                             //记录连接池的指针
+        Socket *p_this;                             //记录连接指针
         bool is_running;                            //标志线程是否正式启动起来
         THREAD_TYPE type;                                    //标志启动线程是发数据线程还是回收线程
 
 
-        explicit thread_item(Socket *pthis,THREAD_TYPE thread_type); // 'r'代表回收线程，默认值
+        explicit thread_item(Socket *pthis,THREAD_TYPE thread_type); //THREAD_TYPE是线程类型，即不同功用的线程
         ~thread_item();
     };
 
@@ -195,6 +196,10 @@ private:
     int flood_check_Enable;                         //开启洪泛攻击检测标志位
     unsigned int flood_time_Interval;               //表示收包频率，即N毫秒收一个包
     int flood_kick_Count;                           //累积多少次就可以判断为洪泛攻击
+
+    //统计用途
+    time_t lastPrintTime;                           //记录上次打印信息的时间
+    int discardSendPKGCount;                        //记录丢弃的待发送消息数量
 
 
     //接下来是一些私有函数
@@ -330,7 +335,8 @@ public:
     //epoll操作事件
     int epoll_operate_event(int fd,unsigned int event_type,unsigned int flag,int action,connection_pool* p_Conn );
 
-
+    //打印统计信息
+    void print_Server_Info();
 
 
 };
