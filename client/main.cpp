@@ -1,12 +1,12 @@
+
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <iostream>
-#include <string.h>
-#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <iostream>
 #include <netinet/in.h>
-#include "CRC32.h"
 #include <cstring>
-#include <errno.h>
+#include "CRC32.h"
 
 using namespace std;
 #pragma pack(1)
@@ -43,10 +43,11 @@ unsigned short  login_body_len = sizeof(LOGIN);
 int server_socket = socket(AF_INET,SOCK_STREAM,0);
 
 
+
 int sendData(int sock,int want_to_send_size,char* sendbuf);
 int sendHeartPacket();
 void send_regeist();
-void recv_regeist();
+void recv_regeist(bool& if_conn);
 void flood_Check();
 int connect_to_server(bool& if_conn);
 long long  recvData(int sock,char* precvBuffer);
@@ -54,8 +55,8 @@ int pkg_header_len = sizeof(pkg_header);
 
 int main()
 {
-    bool if_conn = false;  //判断是否连接，方便只执行一次连接操作
 
+    bool if_conn = false;  //判断是否连接，方便只执行一次连接操作
     cout<<"####################################"<<endl;
     cout<<"         输入c:    连接服务器  "<<endl;
     cout<<"         输入s:    发送数据包  "<<endl;
@@ -78,7 +79,7 @@ int main()
             {
                 cout << "检测到多次连接同一套接字，错误！"<<endl;
             }
-            
+
         }
         else if(ifs == 's')
         {
@@ -86,12 +87,28 @@ int main()
         }
         else if(ifs == 'r')
         {
-            recv_regeist();
+            recv_regeist(if_conn);
         }
         else if(ifs == 'q')  //退出程序
         {
             cout << "程序终止运行" <<endl;
+            if(if_conn)  //如果已经连接，则关闭
+            {
+                //关闭套接字并将if_conn还原
+               int status =  close(server_socket);
+               if(status != -1)
+               {
+                   if_conn = false;
+               }
+               else
+               {
+                   cout << "关闭套接字失败，强行关闭整个程序" <<endl;
+                   exit(-1);
+               }
+            }
+
             exit(0);
+
         }
         else if(ifs == 'h')  //心跳包
         {
@@ -107,7 +124,7 @@ int main()
 
 
     }
-    
+
 
 
 
@@ -117,6 +134,7 @@ int main()
 
 int connect_to_server(bool& if_conn)
 {
+    int noblock = 1;
     struct sockaddr_in server_addr;
     memset(&server_addr,0,sizeof(sockaddr));
 
@@ -124,24 +142,18 @@ int connect_to_server(bool& if_conn)
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     server_addr.sin_port = htons(8080);
     int c = connect(server_socket,(struct sockaddr*)&server_addr,sizeof(struct sockaddr));
-   //这里我们将设置非阻塞套接字放在连接之后做，这样connect()就会不返回-1
-    int noblock = 1;
     ioctl(server_socket, FIONBIO, &noblock);
-
-    //cout << "errno:" <<errno <<endl;
-    cout << strerror(errno)<<"!"<<endl;
     if(c == -1)
     {
-	cout << c<<endl;
+        cout << "连接失败";
         return c;
     }
-   //cout << "连接服务器成功！" <<endl;
     if_conn = true;
     return 0;
 
 }
 
-void recv_regeist()
+void recv_regeist(bool& if_conn)
 {
     char msg[100000] = {0};
     auto count = recv(server_socket,msg,100000,0);
@@ -199,6 +211,8 @@ void recv_regeist()
     {
         //收到0个字节，说明断线了，这里主要用来测试心跳包
         cout << "断线了" <<endl;
+        if_conn = false;
+
     }
 
 }
@@ -322,6 +336,7 @@ int sendHeartPacket()
 
 
     sendData(server_socket,header_len,p_sendbuf);
+    delete [] p_sendbuf;
 }
 void flood_Check()
 {
